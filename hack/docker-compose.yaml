@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # Dex OIDC server with local connector
+  oidc-provider:
+    image: ghcr.io/dexidp/dex:v2.39.0
+    container_name: oidc-provider
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./dex-config.yaml:/etc/dex/config.docker.yaml:ro
+    command:
+      - dex
+      - serve
+      - /etc/dex/config.docker.yaml
+    networks:
+      - testing
+
+  # Echo server to show request details
+  echo-server:
+    image: ealen/echo-server:latest
+    container_name: echo-server
+    ports:
+      - "3000:80"
+    environment:
+      PORT: "80"
+    networks:
+      - testing
+
+  # OIDC to K8s impersonation proxy
+  oidc-2-k8s-impersonation:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: oidc-2-k8s-impersonation
+    ports:
+      - "8080:8080"
+    environment:
+      # Server configuration
+      PORT: "8080"
+      # OIDC configuration
+      ISSUER: "http://oidc-provider:5556"
+      AUDIENCE: "oidc-2-k8s-impersonation"
+      # Upstream configuration
+      UPSTREAM: "http://echo-server"
+      # Claims configuration
+      GROUPS_CLAIM: "groups"
+      USER_CLAIM: "email"
+    depends_on:
+      - oidc-provider
+      - echo-server
+    networks:
+      - testing
+
+networks:
+  testing:
+    driver: bridge
+

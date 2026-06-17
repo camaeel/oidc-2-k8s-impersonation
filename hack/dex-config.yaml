@@ -1,0 +1,46 @@
+issuer: http://oidc-provider:5556
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+# Enable OIDC for token exchange (password grant)
+oauth2:
+  skipApprovalScreen: true
+  responseTypes:
+    - code
+    - token
+    - id_token
+    - code id_token
+    - code token
+    - token id_token
+    - code token id_token
+  grantTypes:
+    - authorization_code
+    - refresh_token
+    - urn:ietf:params:oauth:grant-type:token-exchange
+
+staticClients:
+  - id: oidc-2-k8s-impersonation
+    redirectURIs:
+      - "http://localhost:8080/callback"
+      - "http://127.0.0.1:8080/callback"
+      - "urn:ietf:wg:oauth:2.0:oob"
+    name: 'OIDC to K8s Impersonation'
+    secret: 'ZXhhbXBsZS1hcHAtc2VjcmV0'
+    public: false
+
+# Local connector for testing with predefined users
+staticPasswords:
+- email: user@example.com
+  username: user
+  userID: user-123
+  # password: password (bcrypt hash)
+  hash: $2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcg7b3XeKeUxWdeS86AGR5AoS56
+- email: admin@example.com
+  username: admin
+  userID: admin-456
+  # password: admin (bcrypt hash)
+  hash: $2y$10$aJHHqq9OQ1q3wjFaMpSRWuI8bqWbwGnIFG3n7fz8g/gvzSYvfxoEy

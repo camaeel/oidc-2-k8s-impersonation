@@ -132,7 +132,7 @@ jobs:
         with:
           context: .
           push: true
-          file: ./Dockerfile.prebuilt
+          file: ./Dockerfile
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           # cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache

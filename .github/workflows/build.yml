@@ -1,0 +1,241 @@
+on:
+  push:
+    paths-ignore:
+      - 'charts/**'
+      - 'manifests/**'
+      - 'docs/**'
+      - '/*.md'
+      - 'tests.rest'
+    branches:
+      - '*'
+    tags:
+      - "v*.*.*"
+      - "!vault-*"
+  pull_request:
+    paths-ignore:
+      - 'manifests/**'
+      - 'charts/**'
+      - 'docs/**'
+      - '/*.md'
+      - 'tests.rest'
+  workflow_call:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+name: Build and test
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+  trivy-scan:
+    uses: ./.github/workflows/trivy.yml
+  vet:
+    uses: ./.github/workflows/vet.yml
+  build:
+    runs-on: ${{ matrix.os }}
+    needs:
+      - trivy-scan
+      - test
+      - vet
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm #ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - os: ubuntu-24.04-arm #macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - os: ubuntu-24.04-arm #macos-latest
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: './go.mod'
+          cache: true
+      - name: go mod download
+        run: go mod download
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o bin/oidc-2-k8s-impersonation-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/oidc-2-k8s-impersonation
+      - name: Generate SHA256 checksum
+        working-directory: ${{ github.workspace }}/bin
+        run: |
+          shasum -a 256 oidc-2-k8s-impersonation-${{ matrix.goos }}-${{ matrix.goarch }} > oidc-2-k8s-impersonation-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: oidc-2-k8s-impersonation-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            bin/oidc-2-k8s-impersonation-${{ matrix.goos }}-${{ matrix.goarch }}
+            bin/oidc-2-k8s-impersonation-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+  docker-build:
+    needs:
+      - build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # needed for signing the images with GitHub OIDC Token
+    outputs:
+      image_digest: ${{ steps.build-and-push-image.outputs.digest }}
+    runs-on: ubuntu-24.04-arm #ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      
+      - name: Check cosign install
+        run: cosign version
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set docker metadata
+        uses: docker/metadata-action@v6
+        id: docker_metadata
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=@
+            type=ref,event=branch,prefix=branch-,format=${{ github.ref_name }}
+            type=ref,event=tag,format=${{ github.ref_name }}
+
+      - name: Build and push images to registry
+        id: build-and-push-image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          file: ./Dockerfile.prebuilt
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          platforms: linux/amd64,linux/arm64
+          # cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          # cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: sign image with cosign
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push-image.outputs.digest }}
+  scan:
+    name: "scan images with trivy"
+    needs:
+      - docker-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner in repo mode - non schedule & non master
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker-build.outputs.image_digest }}
+          scan-type: 'image'
+          ignore-unfixed: true # we want to have full report
+          severity: 'CRITICAL,HIGH' #report all severities
+          exit-code: '1'
+          format: 'table'
+
+#  chainsaw-e2e-snapshot:
+#    uses: ./.github/workflows/chainsaw-test.yaml
+#    needs:
+#      - docker-build
+#    with:
+#      image_tag: ${{ github.sha }}@${{ needs.docker-build.outputs.image_digest }}
+  
+  release-docker:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+#      - chainsaw-e2e-snapshot
+      - scan
+      - docker-build
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: pull image from previous job
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker-build.outputs.image_digest }}
+      - name: tag image with latest and version tag
+        run: |
+          docker buildx imagetools create --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker-build.outputs.image_digest }} 
+          
+      - name: Push latest tag only for stable semver
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+        run: |
+          docker buildx imagetools create --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker-build.outputs.image_digest }} 
+#
+#  bump-chart-version:
+#    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+#    needs:
+#      - release-docker
+#    permissions:
+#      contents: write
+#      pull-requests: write
+#    uses: ./.github/workflows/bump-appversion.yml
+
+  release-github:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs:
+#      - chainsaw-e2e-snapshot
+      - scan
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: ./artifacts
+          merge-multiple: true
+          pattern: 'oidc-2-k8s-impersonation-*'
+
+      - name: Upload binaries to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ./artifacts/*
+          append_body: true
+          body: |
+            
+            ## Container image for release ${{ github.ref_name }}:
+
+            Container image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

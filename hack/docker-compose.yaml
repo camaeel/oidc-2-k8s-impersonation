@@ -114,13 +114,12 @@ services:
       - --client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0
       - --redirect-url=http://localhost:4180/oauth2/callback
       # ── Upstream ───────────────────────────────────────────────────────────
-      - --upstream=http://echo-server:80
-      #- --upstream=http://oidc-2-k8s-impersonation:8080
+      - --upstream=http://oidc-2-k8s-impersonation:8080
       # ── Token injection ────────────────────────────────────────────────────
       # oauth2-proxy OIDC provider code path uses session.IDToken (the JWT)
       # when set-authorization-header is true, not the opaque access_token –
       # which is exactly what oidc-2-k8s-impersonation needs to validate.
-      - --set-authorization-header=true
+      - --pass-authorization-header=true
       # ── Auth rules ─────────────────────────────────────────────────────────
       - --email-domain=*
       - --scope=openid email profile groups offline_access

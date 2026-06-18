@@ -15,6 +15,34 @@ import (
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/proxy"
 )
 
+// responseRecorder wraps http.ResponseWriter to capture the status code.
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// withAccessLog wraps h and emits one INFO log line per request regardless of
+// the configured LOG_LEVEL (i.e. it is always visible).
+func withAccessLog(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+		slog.Info("handled request",
+			"method", r.Method,
+			"path", r.URL.RequestURI(),
+			"status", rec.status,
+			"duration", time.Since(start).Round(time.Millisecond),
+			"remote", r.RemoteAddr,
+		)
+	})
+}
+
 // Start starts an HTTP server that proxies all requests to the configured upstream.
 // This call blocks until the server shuts down (terminated by signal) or an error occurs.
 func Start(cfg config.Config) error {
@@ -30,7 +58,7 @@ func Start(cfg config.Config) error {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: handler,
+		Handler: withAccessLog(handler),
 	}
 
 	errCh := make(chan error, 1)

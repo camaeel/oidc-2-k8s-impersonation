@@ -1,46 +1,66 @@
 issuer: http://oidc-provider:5556
 
 storage:
-  type: memory
+  type: postgres
+  config:
+    host: postgres
+    port: 5432
+    database: dex
+    user: dex
+    password: dexpassword
+    ssl:
+      mode: disable
 
 web:
   http: 0.0.0.0:5556
 
-# Enable OIDC for token exchange (password grant)
+logger:
+  level: "info"
+  format: "text"
+
 oauth2:
   skipApprovalScreen: true
   responseTypes:
     - code
-    - token
-    - id_token
-    - code id_token
-    - code token
-    - token id_token
-    - code token id_token
   grantTypes:
     - authorization_code
     - refresh_token
-    - urn:ietf:params:oauth:grant-type:token-exchange
+
+# Connectors
+# - mockCallback: auto-authenticates immediately (no user interaction) and returns a
+#   pre-defined identity WITH groups. Ideal for scripted/automated testing.
+# - local (via enablePasswordDB + staticPasswords): username/password login through the
+#   Dex UI. Good for browser-based manual testing.
+connectors:
+  - type: mockCallback
+    id: mock
+    name: "Mock (automated testing)"
 
 staticClients:
   - id: oidc-2-k8s-impersonation
     redirectURIs:
-      - "http://localhost:8080/callback"
-      - "http://127.0.0.1:8080/callback"
+      # oauth2-proxy browser flow
+      - "http://localhost:4180/oauth2/callback"
+      # Callback captured by the test script's temporary HTTP server
+      - "http://localhost:18080/callback"
+      # Out-of-band – shows the code in the browser for manual testing
       - "urn:ietf:wg:oauth:2.0:oob"
-    name: 'OIDC to K8s Impersonation'
-    secret: 'ZXhhbXBsZS1hcHAtc2VjcmV0'
+    name: "OIDC to K8s Impersonation"
+    secret: "ZXhhbXBsZS1hcHAtc2VjcmV0"
     public: false
 
-# Local connector for testing with predefined users
+# Enable the built-in local password database so the Dex UI shows a
+# username/password form (useful for manual browser-based testing).
+enablePasswordDB: true
+
 staticPasswords:
-- email: user@example.com
-  username: user
-  userID: user-123
-  # password: password (bcrypt hash)
-  hash: $2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcg7b3XeKeUxWdeS86AGR5AoS56
-- email: admin@example.com
-  username: admin
-  userID: admin-456
-  # password: admin (bcrypt hash)
-  hash: $2y$10$aJHHqq9OQ1q3wjFaMpSRWuI8bqWbwGnIFG3n7fz8g/gvzSYvfxoEy
+  - email: user@example.com
+    username: user
+    userID: user-123
+    # plain-text password: password
+    hash: "$2a$12$D3Cwgb95JUQLFjCol9PFR.4R6EjKqNGgc99Zp/UHQPNrU.seckjWW"
+  - email: admin@example.com
+    username: admin
+    userID: admin-456
+    # plain-text password: admin
+    hash: "$2y$10$aJHHqq9OQ1q3wjFaMpSRWuI8bqWbwGnIFG3n7fz8g/gvzSYvfxoEy"

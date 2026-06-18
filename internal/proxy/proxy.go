@@ -44,25 +44,45 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 	// Prepare OIDC verifier if issuer provided.
 	var verifier *oidc.IDTokenVerifier
 	if cfg.Issuer != "" {
-		// Use a short timeout for provider discovery.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		provider, err := oidc.NewProvider(ctx, cfg.Issuer)
+		// Retry OIDC provider discovery so the proxy survives a slow Dex startup.
+		const maxAttempts = 12
+		var provider *oidc.Provider
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			provider, err = oidc.NewProvider(ctx, cfg.Issuer)
+			cancel()
+			if err == nil {
+				slog.Info("OIDC provider discovered", "issuer", cfg.Issuer)
+				break
+			}
+			slog.Warn("OIDC provider not ready, will retry",
+				"attempt", attempt, "max", maxAttempts,
+				"issuer", cfg.Issuer, "error", err)
+			if attempt < maxAttempts {
+				time.Sleep(time.Duration(attempt*5) * time.Second)
+			}
+		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to discover OIDC provider at %s: %w", cfg.Issuer, err)
+			return nil, fmt.Errorf("failed to discover OIDC provider at %s after %d attempts: %w",
+				cfg.Issuer, maxAttempts, err)
 		}
 		// Configure verifier with audience/client id if provided.
 		oidcCfg := &oidc.Config{ClientID: cfg.Audience}
 		verifier = provider.Verifier(oidcCfg)
-
-		// Ensure the provider's HTTP client uses the oauth2 package's default
-		// token source configuration (no token exchange here, just verification).
 		_ = oauth2.HTTPClient
 	}
 
 	// Top-level handler does authentication/impersonation header management
 	// and then delegates to the reverse proxy.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slog.Debug("incoming request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "has_auth", r.Header.Get("Authorization") != "")
+
+		// reject helper – always logs at Warn so it shows at every log level
+		reject := func(msg string, status int, args ...any) {
+			slog.Warn("request rejected", append([]any{"status", status, "reason", msg}, args...)...)
+			http.Error(w, msg, status)
+		}
+
 		// Strip any existing impersonation headers from the incoming request.
 		r.Header.Del("Impersonate-User")
 		r.Header.Del("Impersonate-Group")
@@ -72,11 +92,12 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 		if auth == "" {
 			if verifier != nil {
 				// Authorization required when OIDC verifier is configured.
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				reject("unauthorized", http.StatusUnauthorized)
 				return
 			}
 			// No verifier configured: just remove Authorization and proxy.
 			r.Header.Del("Authorization")
+			slog.Debug("no verifier configured, proxying unauthenticated request")
 			rp.ServeHTTP(w, r)
 			return
 		}
@@ -86,14 +107,15 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 		if len(token) >= 6 && strings.EqualFold(token[:6], "bearer") {
 			// remove 'Bearer' prefix (case-insensitive)
 			token = strings.TrimSpace(token[6:])
+			slog.Debug("bearer token extracted", "token_len", len(token))
 		} else {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			reject("unauthorized", http.StatusUnauthorized, "detail", "authorization header is not Bearer")
 			return
 		}
 
 		if verifier == nil {
 			// Cannot validate token without an issuer configured.
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			reject("unauthorized", http.StatusUnauthorized, "detail", "no OIDC verifier configured")
 			return
 		}
 
@@ -101,18 +123,18 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 		defer cancel()
 		idToken, err := verifier.Verify(vctx, token)
 		if err != nil {
-			slog.Warn("token verification failed", "error", err)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			reject("unauthorized", http.StatusUnauthorized, "error", err)
 			return
 		}
+		slog.Debug("token verified", "subject", idToken.Subject, "issuer", idToken.Issuer, "expiry", idToken.Expiry)
 
 		// Extract claims.
 		var claims map[string]interface{}
 		if err := idToken.Claims(&claims); err != nil {
-			slog.Warn("failed to parse token claims", "error", err)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			reject("unauthorized", http.StatusUnauthorized, "error", err)
 			return
 		}
+		slog.Debug("token claims parsed", "claims", claims)
 
 		// Extract groups claim (expected to be a list). Be permissive with formats.
 		var groups []string
@@ -137,24 +159,35 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 					}
 				}
 			}
+			slog.Debug("groups extracted from token", "claim", cfg.GroupsClaim, "groups", groups)
 		}
 
 		// Filter groups by prefix and add impersonation headers.
+		var impersonateGroups []string
 		for _, g := range groups {
 			if cfg.GroupPrefix == "" || strings.HasPrefix(g, cfg.GroupPrefix) {
 				out := cfg.AppendPrefix + g
 				r.Header.Add("Impersonate-Group", out)
+				impersonateGroups = append(impersonateGroups, out)
 			}
 		}
 
 		// Extract user claim and set Impersonate-User header if present.
+		var impersonateUser string
 		if cfg.UserClaim != "" {
 			if uraw, ok := claims[cfg.UserClaim]; ok && uraw != nil {
 				if us, ok := uraw.(string); ok && us != "" {
 					r.Header.Set("Impersonate-User", us)
+					impersonateUser = us
 				}
 			}
 		}
+
+		slog.Debug("proxying request with impersonation headers",
+			"impersonate_user", impersonateUser,
+			"impersonate_groups", impersonateGroups,
+			"upstream", cfg.Upstream,
+		)
 
 		// Strip Authorization header before proxying.
 		r.Header.Del("Authorization")

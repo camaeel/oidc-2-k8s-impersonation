@@ -1,7 +1,27 @@
-version: '3.8'
+name: oidc-2-k8s-impersonation
 
 services:
-  # Dex OIDC server with local connector
+  # ── Postgres – Dex token/session/key storage ───────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: dex
+      POSTGRES_USER: dex
+      POSTGRES_PASSWORD: dexpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dex -d dex"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - testing
+
+  # ── Dex OIDC provider ──────────────────────────────────────────────────────
   oidc-provider:
     image: ghcr.io/dexidp/dex:v2.39.0
     container_name: oidc-provider
@@ -13,10 +33,13 @@ services:
       - dex
       - serve
       - /etc/dex/config.docker.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - testing
 
-  # Echo server to show request details
+  # ── Echo server – shows every header the proxy forwards upstream ───────────
   echo-server:
     image: ealen/echo-server:latest
     container_name: echo-server
@@ -27,32 +50,96 @@ services:
     networks:
       - testing
 
-  # OIDC to K8s impersonation proxy
+  # ── OIDC → K8s impersonation proxy ────────────────────────────────────────
   oidc-2-k8s-impersonation:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+#    build:
+#      context: ..
+#      dockerfile: Dockerfile
     container_name: oidc-2-k8s-impersonation
+    image: oidc-2-k8s-impersonation:local
     ports:
       - "8080:8080"
     environment:
-      # Server configuration
+      # Server
       PORT: "8080"
-      # OIDC configuration
+      LOG_LEVEL: "debug"
+      # OIDC – must match the issuer in dex-config.yaml
       ISSUER: "http://oidc-provider:5556"
       AUDIENCE: "oidc-2-k8s-impersonation"
-      # Upstream configuration
+      # Upstream
       UPSTREAM: "http://echo-server"
-      # Claims configuration
+      # Claims → Impersonate-* header mapping
       GROUPS_CLAIM: "groups"
       USER_CLAIM: "email"
+      # Optional: only forward groups with this prefix (empty = all)
+      # GROUP_PREFIX: "k8s:"
+      # Optional: prepend this string to each forwarded group name
+      # APPEND_PREFIX: ""
     depends_on:
       - oidc-provider
       - echo-server
     networks:
       - testing
 
+  # ── oauth2-proxy – browser-based login frontend ───────────────────────────
+  #
+  # Handles the full OIDC auth-code flow in the browser, then injects the
+  # Dex-issued ID token (a JWT) as  Authorization: Bearer <token>  on every
+  # proxied request to oidc-2-k8s-impersonation.
+  #
+  # Flow:
+  #   Browser → localhost:4180 (oauth2-proxy)
+  #     → http://oidc-provider:5556/auth  (Dex login)  ← needs /etc/hosts entry
+  #     → localhost:4180/oauth2/callback  (back to oauth2-proxy)
+  #     → oidc-2-k8s-impersonation:8080  (JWT validated, Impersonate-* set)
+  #     → echo-server                    (upstream sees the headers)
+  #
+  # Prerequisites (one-time, on the host machine):
+  #   echo "127.0.0.1 oidc-provider" | sudo tee -a /etc/hosts
+  # OR:
+  #   make dev-hosts
+  #
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    container_name: oauth2-proxy
+    ports:
+      - "4180:4180"
+    command:
+      - --http-address=0.0.0.0:4180
+      # ── OIDC provider ──────────────────────────────────────────────────────
+      - --provider=oidc
+      - --oidc-issuer-url=http://oidc-provider:5556
+      # Use the same client as oidc-2-k8s-impersonation so the aud claim matches
+      - --client-id=oidc-2-k8s-impersonation
+      - --client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0
+      - --redirect-url=http://localhost:4180/oauth2/callback
+      # ── Upstream ───────────────────────────────────────────────────────────
+      - --upstream=http://echo-server:80
+      #- --upstream=http://oidc-2-k8s-impersonation:8080
+      # ── Token injection ────────────────────────────────────────────────────
+      # oauth2-proxy OIDC provider code path uses session.IDToken (the JWT)
+      # when set-authorization-header is true, not the opaque access_token –
+      # which is exactly what oidc-2-k8s-impersonation needs to validate.
+      - --set-authorization-header=true
+      # ── Auth rules ─────────────────────────────────────────────────────────
+      - --email-domain=*
+      - --scope=openid email profile groups offline_access
+      - --insecure-oidc-allow-unverified-email=true
+      - --skip-provider-button=true
+      # ── Session cookie ─────────────────────────────────────────────────────
+      # base64("1234567890123456") – 16-byte AES-128 key, change in production
+      - --cookie-secret=MTIzNDU2Nzg5MDEyMzQ1Ng==
+      - --cookie-secure=false
+      - --cookie-name=_oauth2_proxy_dev
+    depends_on:
+      - oidc-provider
+      - oidc-2-k8s-impersonation
+    networks:
+      - testing
+
+volumes:
+  postgres-data:
+
 networks:
   testing:
     driver: bridge
-

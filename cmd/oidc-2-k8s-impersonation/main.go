@@ -3,22 +3,16 @@ package main
 import (
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/config"
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/server"
+	"github.com/camaeel/oidc-2-k8s-impersonation/internal/utils/logging"
 )
 
 func main() {
 	// Configure log level via LOG_LEVEL env var (debug|info|warn|error).
 	// Defaults to "info".
-	level := slog.LevelInfo
-	if raw := strings.ToLower(os.Getenv("LOG_LEVEL")); raw != "" {
-		if err := level.UnmarshalText([]byte(raw)); err != nil {
-			slog.Warn("unknown LOG_LEVEL, defaulting to info", "value", raw)
-		}
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	logging.SetupLogging()
 
 	cfg := config.GetConfig()
 	slog.Debug("starting with config",

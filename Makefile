@@ -19,3 +19,6 @@ clean:
 
 docker:
 	docker build -t oidc-2-k8s-impersonation:local .
+
+.PHONY: all build test vet lint format clean docker \
+        dev-hosts dev-up dev-down dev-clean dev-logs dev-test

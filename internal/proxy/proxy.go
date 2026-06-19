@@ -170,7 +170,7 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 		var impersonateGroups []string
 		for _, g := range groups {
 			if cfg.GroupPrefix == "" || strings.HasPrefix(g, cfg.GroupPrefix) {
-				out := cfg.AppendPrefix + g
+				out := cfg.AddGroupPrefix + g
 				r.Header.Add("Impersonate-Group", out)
 				impersonateGroups = append(impersonateGroups, out)
 			}

@@ -1,12 +1,28 @@
 package config
 
 import (
+	"flag"
+	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 )
 
-const defaultPort = 8080
+const (
+	defaultHttpPort    = 8080
+	defaultGroupsClaim = "groups"
+	defaultUserClaim   = "sub"
+
+	portEnvVarName           = "PORT"
+	upstreamEnvVarName       = "UPSTREAM"
+	issuerEnvVarName         = "ISSUER"
+	audienceEnvVarName       = "AUDIENCE"
+	groupsClaimEnvVarName    = "GROUPS_CLAIM"
+	userClaimEnvVarName      = "USER_CLAIM"
+	groupsPrefixEnvVarName   = "GROUP_PREFIX"
+	addGroupPrefixEnvVarName = "ADD_GROUP_PREFIX"
+)
 
 type Config struct {
 	Port     int
@@ -21,40 +37,114 @@ type Config struct {
 	UserClaim   string // name of the claim that contains the user name
 
 	// Filtering / prefixing
-	GroupPrefix  string // only groups that start with this prefix will be proxied
-	AppendPrefix string // prefix to add to groups when creating Impersonate-Group headers
+	GroupPrefix    string // only groups that start with this prefix will be proxied
+	AddGroupPrefix string // prefix to add to groups when creating Impersonate-Group headers
 }
 
-// GetConfig builds a Config from environment variables with sensible defaults.
+// GetConfig parses --flags (with env vars as defaults) and returns a Config.
 //
-// Supported environment variables:
+// Each flag falls back to its corresponding env var when not supplied:
 //
-//	PORT          – listening port (default: 8080)
-//	UPSTREAM      – upstream base URL (required)
-//	ISSUER        – OIDC issuer URL for token validation
-//	AUDIENCE      – expected audience / client-id in the token
-//	GROUPS_CLAIM  – JWT claim name that holds group memberships
-//	USER_CLAIM    – JWT claim name that holds the user identifier
-//	GROUP_PREFIX  – only proxy groups with this prefix (empty = all)
-//	APPEND_PREFIX – string prepended to each group in Impersonate-Group header
-func GetConfig() Config {
-	port := defaultPort
-	if raw := os.Getenv("PORT"); raw != "" {
-		if p, err := strconv.Atoi(raw); err == nil {
-			port = p
-		} else {
-			slog.Warn("invalid PORT value, using default", "value", raw, "default", defaultPort)
-		}
+//	-port          PORT          (default: 8080)
+//	-upstream      UPSTREAM
+//	-issuer        ISSUER
+//	-audience      AUDIENCE
+//	-groups-claim  GROUPS_CLAIM
+//	-user-claim    USER_CLAIM
+//	-group-prefix  GROUP_PREFIX
+//	-append-prefix APPEND_PREFIX
+//
+// Log level is configured separately via the LOG_LEVEL env var (see logging package).
+func GetConfig() (Config, error) {
+	defaultPortEnv, err := portEnvDefault()
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid port in PORT env var: %w", err)
 	}
 
-	return Config{
-		Port:         port,
-		Upstream:     os.Getenv("UPSTREAM"),
-		Issuer:       os.Getenv("ISSUER"),
-		Audience:     os.Getenv("AUDIENCE"),
-		GroupsClaim:  os.Getenv("GROUPS_CLAIM"),
-		UserClaim:    os.Getenv("USER_CLAIM"),
-		GroupPrefix:  os.Getenv("GROUP_PREFIX"),
-		AppendPrefix: os.Getenv("APPEND_PREFIX"),
+	defaultGroupsEnv := os.Getenv(groupsClaimEnvVarName)
+	if defaultGroupsEnv == "" {
+		defaultGroupsEnv = defaultGroupsClaim
 	}
+
+	defaultUserEnv := os.Getenv(userClaimEnvVarName)
+	if defaultUserEnv == "" {
+		defaultUserEnv = defaultUserClaim
+	}
+
+	port := flag.Int("port", defaultPortEnv, "listening `port`")
+	upstream := flag.String("upstream", os.Getenv(upstreamEnvVarName), "upstream base `URL` (required)")
+	issuer := flag.String("issuer", os.Getenv(issuerEnvVarName), "OIDC issuer `URL` for token validation")
+	audience := flag.String("audience", os.Getenv(audienceEnvVarName), "expected audience / client-id in the token")
+	groupsClaim := flag.String("groups-claim", defaultGroupsEnv, "JWT claim name that holds group memberships")
+	userClaim := flag.String("user-claim", defaultUserEnv, "JWT claim name that holds the user identifier")
+	groupPrefix := flag.String("group-prefix", os.Getenv(groupsPrefixEnvVarName), "only proxy groups with this prefix (empty = all)")
+	addGroupPrefix := flag.String("add-group-prefix", os.Getenv(addGroupPrefixEnvVarName), "prefix prepended to each group in Impersonate-Group header")
+
+	flag.Parse()
+
+	cfg := Config{
+		Port:           *port,
+		Upstream:       *upstream,
+		Issuer:         *issuer,
+		Audience:       *audience,
+		GroupsClaim:    *groupsClaim,
+		UserClaim:      *userClaim,
+		GroupPrefix:    *groupPrefix,
+		AddGroupPrefix: *addGroupPrefix,
+	}
+
+	err = validateConfig(cfg)
+	if err != nil {
+		return Config{}, err
+	}
+
+	slog.Debug("starting with config",
+		"port", cfg.Port,
+		"upstream", cfg.Upstream,
+		"issuer", cfg.Issuer,
+		"audience", cfg.Audience,
+		"user_claim", cfg.UserClaim,
+		"groups_claim", cfg.GroupsClaim,
+		"group_prefix", cfg.GroupPrefix,
+		"add_group_prefix", cfg.AddGroupPrefix,
+	)
+
+	return cfg, nil
+}
+
+func portEnvDefault() (int, error) {
+	portStr := os.Getenv(portEnvVarName)
+	if portStr == "" {
+		return defaultHttpPort, nil
+	}
+	return strconv.Atoi(portStr)
+}
+
+func validateConfig(cfg Config) error {
+	if cfg.Upstream == "" {
+		return fmt.Errorf("upstream URL is required")
+	}
+	upstream, err := url.Parse(cfg.Upstream)
+	if err != nil {
+		return fmt.Errorf("invalid upstream URL: %w", err)
+	}
+
+	if upstream.Path != "" && upstream.Path != "/" {
+		return fmt.Errorf("upstream URL must not contain a path")
+	}
+
+	if upstream.Scheme != "http" && upstream.Scheme != "https" {
+		return fmt.Errorf("upstream URL must have http or https scheme")
+	}
+
+	if cfg.Issuer == "" {
+		return fmt.Errorf("issuer URL is required")
+	}
+
+	_, err = url.Parse(cfg.Issuer)
+	if err != nil {
+		return fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
+	return nil
 }

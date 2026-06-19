@@ -2,18 +2,29 @@ package proxy
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/config"
 )
 
+// mockVerifier implements TokenVerifier for testing.
+type mockVerifier struct {
+	token *oidc.IDToken
+	err   error
+}
+
+func (m *mockVerifier) Verify(_ context.Context, _ string) (*oidc.IDToken, error) {
+	return m.token, m.err
+}
+
 func TestExtractBearerToken(t *testing.T) {
-	tests := []struct {
+	testcases := []struct {
 		name       string
 		authHeader string
 		wantToken  string
@@ -66,127 +77,102 @@ func TestExtractBearerToken(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := extractBearerToken(tt.authHeader)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("extractBearerToken() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.wantToken {
-				t.Errorf("extractBearerToken() = %q, want %q", got, tt.wantToken)
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractBearerToken(tc.authHeader)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantToken, got)
 			}
 		})
 	}
 }
 
-// mockVerifier implements TokenVerifier for testing.
-type mockVerifier struct {
-	token *oidc.IDToken
-	err   error
-}
-
-func (m *mockVerifier) Verify(_ context.Context, _ string) (*oidc.IDToken, error) {
-	return m.token, m.err
-}
-
-func TestAuthMiddleware_noAuth_noVerifier(t *testing.T) {
-	cfg := config.Config{Upstream: "http://localhost"}
-
-	var receivedHeaders http.Header
-	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header.Clone()
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("proxied"))
-	}), nil, cfg)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Impersonate-User", "evil")
-	req.Header.Set("Impersonate-Group", "admin")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+func TestAuthMiddleware(t *testing.T) {
+	testcases := []struct {
+		name            string
+		verifier        TokenVerifier
+		authHeader      string
+		impersonateUser string
+		impersonateGrp  string
+		wantStatus      int
+		wantProxied     bool
+	}{
+		{
+			name:            "no auth, no verifier → proxied, impersonation stripped",
+			verifier:        nil,
+			authHeader:      "",
+			impersonateUser: "evil",
+			impersonateGrp:  "admin",
+			wantStatus:      http.StatusOK,
+			wantProxied:     true,
+		},
+		{
+			name:        "no auth, with verifier → 401",
+			verifier:    &mockVerifier{},
+			authHeader:  "",
+			wantStatus:  http.StatusUnauthorized,
+			wantProxied: false,
+		},
+		{
+			name:        "invalid bearer scheme → 401",
+			verifier:    &mockVerifier{},
+			authHeader:  "Basic dXNlcjpwYXNz",
+			wantStatus:  http.StatusUnauthorized,
+			wantProxied: false,
+		},
+		{
+			name:        "verify fails → 401",
+			verifier:    &mockVerifier{err: context.DeadlineExceeded},
+			authHeader:  "Bearer some-token",
+			wantStatus:  http.StatusUnauthorized,
+			wantProxied: false,
+		},
+		{
+			name:        "auth present, no verifier → 401",
+			verifier:    nil,
+			authHeader:  "Bearer some-token",
+			wantStatus:  http.StatusUnauthorized,
+			wantProxied: false,
+		},
 	}
-	if receivedHeaders.Get("Impersonate-User") != "" {
-		t.Error("Impersonate-User header should be stripped")
-	}
-	if receivedHeaders.Get("Impersonate-Group") != "" {
-		t.Error("Impersonate-Group header should be stripped")
-	}
-}
 
-func TestAuthMiddleware_noAuth_withVerifier(t *testing.T) {
-	verifier := &mockVerifier{}
-	cfg := config.Config{Upstream: "http://localhost"}
-	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("should not reach backend")
-	}), verifier, cfg)
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			proxied := false
+			var receivedHeaders http.Header
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				proxied = true
+				receivedHeaders = r.Header.Clone()
+				w.WriteHeader(http.StatusOK)
+			})
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
-	}
-}
+			handler := AuthMiddleware(next, tc.verifier, config.Config{Upstream: "http://localhost"})
 
-func TestAuthMiddleware_invalidBearerScheme(t *testing.T) {
-	verifier := &mockVerifier{}
-	cfg := config.Config{Upstream: "http://localhost"}
-	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("should not reach backend")
-	}), verifier, cfg)
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+			if tc.impersonateUser != "" {
+				req.Header.Set("Impersonate-User", tc.impersonateUser)
+			}
+			if tc.impersonateGrp != "" {
+				req.Header.Set("Impersonate-Group", tc.impersonateGrp)
+			}
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
-	}
-}
+			assert.Equal(t, tc.wantStatus, rec.Code)
+			assert.Equal(t, tc.wantProxied, proxied)
 
-func TestAuthMiddleware_verifyFails(t *testing.T) {
-	verifier := &mockVerifier{err: context.DeadlineExceeded}
-	cfg := config.Config{Upstream: "http://localhost"}
-	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("should not reach backend")
-	}), verifier, cfg)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
-	}
-}
-
-func TestAuthMiddleware_authWithNoVerifier(t *testing.T) {
-	cfg := config.Config{Upstream: "http://localhost"}
-	handler := AuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("should not reach backend")
-	}), nil, cfg)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rec.Code)
-	}
-	body, _ := io.ReadAll(rec.Body)
-	if got := string(body); got == "" {
-		t.Error("expected error message in body")
+			if tc.wantProxied {
+				assert.Empty(t, receivedHeaders.Get("Impersonate-User"), "Impersonate-User should be stripped")
+				assert.Empty(t, receivedHeaders.Get("Impersonate-Group"), "Impersonate-Group should be stripped")
+			}
+		})
 	}
 }
-
-// NOTE: Full happy-path integration tests (with real OIDC tokens and impersonation
-// header verification) are covered in proxy_test.go. The unit tests above focus on
-// individual rejection paths that don't require constructing a real oidc.IDToken.

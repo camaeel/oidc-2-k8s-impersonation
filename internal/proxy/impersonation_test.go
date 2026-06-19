@@ -1,12 +1,13 @@
 package proxy
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestExtractGroups(t *testing.T) {
-	tests := []struct {
+	testcases := []struct {
 		name        string
 		claims      map[string]interface{}
 		groupsClaim string
@@ -31,37 +32,37 @@ func TestExtractGroups(t *testing.T) {
 			want:        nil,
 		},
 		{
-			name:        "claim is []interface{} of strings",
+			name:        "[]interface{} of strings",
 			claims:      map[string]interface{}{"groups": []interface{}{"admin", "dev", "ops"}},
 			groupsClaim: "groups",
 			want:        []string{"admin", "dev", "ops"},
 		},
 		{
-			name:        "claim is []interface{} with non-string elements skipped",
+			name:        "[]interface{} with non-string skipped",
 			claims:      map[string]interface{}{"groups": []interface{}{"admin", 42, "ops"}},
 			groupsClaim: "groups",
 			want:        []string{"admin", "ops"},
 		},
 		{
-			name:        "claim is []string",
+			name:        "[]string",
 			claims:      map[string]interface{}{"groups": []string{"a", "b"}},
 			groupsClaim: "groups",
 			want:        []string{"a", "b"},
 		},
 		{
-			name:        "claim is comma-separated string",
+			name:        "comma-separated string",
 			claims:      map[string]interface{}{"groups": "admin, dev, ops"},
 			groupsClaim: "groups",
 			want:        []string{"admin", "dev", "ops"},
 		},
 		{
-			name:        "claim is single string without commas",
+			name:        "single string without commas",
 			claims:      map[string]interface{}{"groups": "admin"},
 			groupsClaim: "groups",
 			want:        []string{"admin"},
 		},
 		{
-			name:        "claim is empty string",
+			name:        "empty string",
 			claims:      map[string]interface{}{"groups": ""},
 			groupsClaim: "groups",
 			want:        nil,
@@ -74,18 +75,16 @@ func TestExtractGroups(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractGroups(tt.claims, tt.groupsClaim)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("extractGroups() = %v, want %v", got, tt.want)
-			}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractGroups(tc.claims, tc.groupsClaim)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
 func TestFilterGroups(t *testing.T) {
-	tests := []struct {
+	testcases := []struct {
 		name         string
 		groups       []string
 		filterPrefix string
@@ -143,18 +142,16 @@ func TestFilterGroups(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := filterGroups(tt.groups, tt.filterPrefix, tt.addPrefix)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("filterGroups() = %v, want %v", got, tt.want)
-			}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterGroups(tc.groups, tc.filterPrefix, tc.addPrefix)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
 func TestExtractUser(t *testing.T) {
-	tests := []struct {
+	testcases := []struct {
 		name      string
 		claims    map[string]interface{}
 		userClaim string
@@ -179,31 +176,29 @@ func TestExtractUser(t *testing.T) {
 			want:      "",
 		},
 		{
-			name:      "claim is valid string",
+			name:      "valid string",
 			claims:    map[string]interface{}{"sub": "alice@example.com"},
 			userClaim: "sub",
 			want:      "alice@example.com",
 		},
 		{
-			name:      "claim is non-string type",
+			name:      "non-string type",
 			claims:    map[string]interface{}{"sub": 12345},
 			userClaim: "sub",
 			want:      "",
 		},
 		{
-			name:      "custom claim name (email)",
+			name:      "custom claim (email)",
 			claims:    map[string]interface{}{"email": "bob@test.org"},
 			userClaim: "email",
 			want:      "bob@test.org",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractUser(tt.claims, tt.userClaim)
-			if got != tt.want {
-				t.Errorf("extractUser() = %q, want %q", got, tt.want)
-			}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractUser(tc.claims, tc.userClaim)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

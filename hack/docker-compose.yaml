@@ -59,6 +59,7 @@ services:
     image: oidc-2-k8s-impersonation:local
     ports:
       - "8080:8080"
+      - "8081:8081"
     environment:
       # Server
       PORT: "8080"

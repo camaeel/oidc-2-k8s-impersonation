@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/config"
+	"github.com/camaeel/oidc-2-k8s-impersonation/internal/observability"
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/proxy"
 )
 
@@ -44,48 +46,89 @@ func withAccessLog(h http.Handler) http.Handler {
 	})
 }
 
-// Start starts an HTTP server that proxies all requests to the configured upstream.
-// This call blocks until the server shuts down (terminated by signal) or an error occurs.
+// Start starts the proxy and observability servers.
+// The observability server (/livez, /readyz) starts immediately.
+// The proxy server starts after OIDC provider discovery completes.
+// The readiness probe is marked ready only after the proxy server is listening.
+// This call blocks until a termination signal is received or a fatal error occurs.
 func Start(cfg config.Config) error {
 	if cfg.Upstream == "" {
 		return fmt.Errorf("upstream not configured")
 	}
 
+	// 1. Create readiness probe (not ready yet).
+	probe := observability.NewReadinessProbe()
+
+	// 2. Start observability server immediately so /livez is available during OIDC discovery.
+	obsCtx, obsCancel := context.WithCancel(context.Background())
+	defer obsCancel()
+	obsErrCh := make(chan error, 1)
+	go func() {
+		obsErrCh <- observability.Start(obsCtx, cfg.ObservabilityPort, probe)
+	}()
+
+	// 3. Build the reverse proxy handler (blocks during OIDC provider discovery with retries).
 	handler, err := proxy.NewReverseProxy(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create reverse proxy: %w", err)
 	}
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
+	// 4. Bind the proxy listener before marking ready — ensures the port is open.
+	proxyAddr := fmt.Sprintf(":%d", cfg.Port)
+	proxyListener, err := net.Listen("tcp", proxyAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", proxyAddr, err)
+	}
+
 	srv := &http.Server{
-		Addr:    addr,
 		Handler: withAccessLog(handler),
 	}
 
-	errCh := make(chan error, 1)
+	proxyErrCh := make(chan error, 1)
 	go func() {
-		slog.Info("starting HTTP proxy server", "addr", addr, "upstream", cfg.Upstream)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
+		slog.Info("starting HTTP proxy server", "addr", proxyAddr, "upstream", cfg.Upstream)
+		if err := srv.Serve(proxyListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			proxyErrCh <- err
 			return
 		}
-		errCh <- nil
+		proxyErrCh <- nil
 	}()
 
-	// Wait for termination signal or server error
+	// 5. Mark ready — proxy listener is bound (kernel queues incoming connections),
+	//    OIDC is configured, Serve() goroutine is launched. Accepting the small race
+	//    that Serve's accept loop may start a moment after MarkReady.
+	probe.MarkReady()
+	slog.Info("proxy is ready", "addr", proxyAddr)
+
+	// Wait for termination signal or server error.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case sig := <-sigCh:
-		slog.Info("shutting down server", "signal", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		slog.Info("shutting down", "signal", sig)
+
+		// Mark not ready first — k8s stops sending traffic.
+		probe.MarkNotReady()
+
+		// Gracefully shut down the proxy server.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			return fmt.Errorf("server shutdown failed: %w", err)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("proxy server shutdown error", "error", err)
 		}
+
+		// Stop observability server.
+		obsCancel()
+		<-obsErrCh
+
 		return nil
-	case err := <-errCh:
-		return err
+
+	case err := <-proxyErrCh:
+		obsCancel()
+		return fmt.Errorf("proxy server error: %w", err)
+
+	case err := <-obsErrCh:
+		return fmt.Errorf("observability server error: %w", err)
 	}
 }

@@ -55,7 +55,7 @@ func TestPortEnvDefault(t *testing.T) {
 				os.Unsetenv(portEnvVarName)
 			}
 
-			got, err := portEnvDefault()
+			got, err := portEnvDefault(portEnvVarName, defaultHttpPort)
 			if tc.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -86,11 +86,12 @@ func TestGetConfig(t *testing.T) {
 				"--issuer=" + validIssuer,
 			},
 			want: Config{
-				Port:        defaultHttpPort,
-				Upstream:    validUpstream,
-				Issuer:      validIssuer,
-				GroupsClaim: defaultGroupsClaim,
-				UserClaim:   defaultUserClaim,
+				Port:              defaultHttpPort,
+				ObservabilityPort: defaultObservabilityPort,
+				Upstream:          validUpstream,
+				Issuer:            validIssuer,
+				GroupsClaim:       defaultGroupsClaim,
+				UserClaim:         defaultUserClaim,
 			},
 		},
 		{
@@ -106,14 +107,15 @@ func TestGetConfig(t *testing.T) {
 				"--add-group-prefix=system:",
 			},
 			want: Config{
-				Port:           9090,
-				Upstream:       validUpstream,
-				Issuer:         validIssuer,
-				Audience:       "my-client",
-				GroupsClaim:    "roles",
-				UserClaim:      "email",
-				GroupPrefix:    "team:",
-				AddGroupPrefix: "system:",
+				Port:              9090,
+				ObservabilityPort: defaultObservabilityPort,
+				Upstream:          validUpstream,
+				Issuer:            validIssuer,
+				Audience:          "my-client",
+				GroupsClaim:       "roles",
+				UserClaim:         "email",
+				GroupPrefix:       "team:",
+				AddGroupPrefix:    "system:",
 			},
 		},
 		{
@@ -130,14 +132,15 @@ func TestGetConfig(t *testing.T) {
 				"ADD_GROUP_PREFIX": "env-append:",
 			},
 			want: Config{
-				Port:           7070,
-				Upstream:       validUpstream,
-				Issuer:         validIssuer,
-				Audience:       "env-client",
-				GroupsClaim:    "roles",
-				UserClaim:      "email",
-				GroupPrefix:    "env-prefix:",
-				AddGroupPrefix: "env-append:",
+				Port:              7070,
+				ObservabilityPort: defaultObservabilityPort,
+				Upstream:          validUpstream,
+				Issuer:            validIssuer,
+				Audience:          "env-client",
+				GroupsClaim:       "roles",
+				UserClaim:         "email",
+				GroupPrefix:       "env-prefix:",
+				AddGroupPrefix:    "env-append:",
 			},
 		},
 		{
@@ -152,11 +155,12 @@ func TestGetConfig(t *testing.T) {
 				"UPSTREAM": "https://env-loses.example.com",
 			},
 			want: Config{
-				Port:        8888,
-				Upstream:    "https://flag-wins.example.com",
-				Issuer:      validIssuer,
-				GroupsClaim: defaultGroupsClaim,
-				UserClaim:   defaultUserClaim,
+				Port:              8888,
+				ObservabilityPort: defaultObservabilityPort,
+				Upstream:          "https://flag-wins.example.com",
+				Issuer:            validIssuer,
+				GroupsClaim:       defaultGroupsClaim,
+				UserClaim:         defaultUserClaim,
 			},
 		},
 		{

@@ -10,23 +10,26 @@ import (
 )
 
 const (
-	defaultHttpPort    = 8080
-	defaultGroupsClaim = "groups"
-	defaultUserClaim   = "sub"
+	defaultHttpPort            = 8080
+	defaultObservabilityPort   = 8081
+	defaultGroupsClaim         = "groups"
+	defaultUserClaim           = "sub"
 
-	portEnvVarName           = "PORT"
-	upstreamEnvVarName       = "UPSTREAM"
-	issuerEnvVarName         = "ISSUER"
-	audienceEnvVarName       = "AUDIENCE"
-	groupsClaimEnvVarName    = "GROUPS_CLAIM"
-	userClaimEnvVarName      = "USER_CLAIM"
-	groupsPrefixEnvVarName   = "GROUP_PREFIX"
-	addGroupPrefixEnvVarName = "ADD_GROUP_PREFIX"
+	portEnvVarName              = "PORT"
+	observabilityPortEnvVarName = "OBSERVABILITY_PORT"
+	upstreamEnvVarName          = "UPSTREAM"
+	issuerEnvVarName            = "ISSUER"
+	audienceEnvVarName          = "AUDIENCE"
+	groupsClaimEnvVarName       = "GROUPS_CLAIM"
+	userClaimEnvVarName         = "USER_CLAIM"
+	groupsPrefixEnvVarName      = "GROUP_PREFIX"
+	addGroupPrefixEnvVarName    = "ADD_GROUP_PREFIX"
 )
 
 type Config struct {
-	Port     int
-	Upstream string
+	Port              int
+	ObservabilityPort int
+	Upstream          string
 	// OIDC issuer URL (e.g. https://accounts.example.com/)
 	Issuer string
 	// Expected audience / client id for token verification
@@ -56,9 +59,14 @@ type Config struct {
 //
 // Log level is configured separately via the LOG_LEVEL env var (see logging package).
 func GetConfig() (Config, error) {
-	defaultPortEnv, err := portEnvDefault()
+	defaultPortEnv, err := portEnvDefault(portEnvVarName, defaultHttpPort)
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid port in PORT env var: %w", err)
+	}
+
+	defaultObsPortEnv, err := portEnvDefault(observabilityPortEnvVarName, defaultObservabilityPort)
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid port in OBSERVABILITY_PORT env var: %w", err)
 	}
 
 	defaultGroupsEnv := os.Getenv(groupsClaimEnvVarName)
@@ -72,6 +80,7 @@ func GetConfig() (Config, error) {
 	}
 
 	port := flag.Int("port", defaultPortEnv, "listening `port`")
+	observabilityPort := flag.Int("observability-port", defaultObsPortEnv, "observability (health/ready) `port`")
 	upstream := flag.String("upstream", os.Getenv(upstreamEnvVarName), "upstream base `URL` (required)")
 	issuer := flag.String("issuer", os.Getenv(issuerEnvVarName), "OIDC issuer `URL` for token validation")
 	audience := flag.String("audience", os.Getenv(audienceEnvVarName), "expected audience / client-id in the token")
@@ -83,8 +92,9 @@ func GetConfig() (Config, error) {
 	flag.Parse()
 
 	cfg := Config{
-		Port:           *port,
-		Upstream:       *upstream,
+		Port:              *port,
+		ObservabilityPort: *observabilityPort,
+		Upstream:          *upstream,
 		Issuer:         *issuer,
 		Audience:       *audience,
 		GroupsClaim:    *groupsClaim,
@@ -100,6 +110,7 @@ func GetConfig() (Config, error) {
 
 	slog.Debug("starting with config",
 		"port", cfg.Port,
+		"observability_port", cfg.ObservabilityPort,
 		"upstream", cfg.Upstream,
 		"issuer", cfg.Issuer,
 		"audience", cfg.Audience,
@@ -112,10 +123,10 @@ func GetConfig() (Config, error) {
 	return cfg, nil
 }
 
-func portEnvDefault() (int, error) {
-	portStr := os.Getenv(portEnvVarName)
+func portEnvDefault(envVar string, defaultPort int) (int, error) {
+	portStr := os.Getenv(envVar)
 	if portStr == "" {
-		return defaultHttpPort, nil
+		return defaultPort, nil
 	}
 	return strconv.Atoi(portStr)
 }

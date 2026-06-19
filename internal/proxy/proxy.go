@@ -68,6 +68,10 @@ func NewReverseProxy(cfg config.Config) (http.Handler, error) {
 		}
 		// Configure verifier with audience/client id if provided.
 		oidcCfg := &oidc.Config{ClientID: cfg.Audience}
+		if cfg.Audience == "" {
+			oidcCfg.SkipClientIDCheck = true
+			slog.Warn("AUDIENCE not configured, skipping OIDC audience (client_id) verification")
+		}
 		verifier = provider.Verifier(oidcCfg)
 		_ = oauth2.HTTPClient
 	}

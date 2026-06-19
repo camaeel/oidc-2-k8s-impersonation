@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -64,7 +65,7 @@ func Start(cfg config.Config) error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("starting HTTP proxy server", "addr", addr, "upstream", cfg.Upstream)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
 		}

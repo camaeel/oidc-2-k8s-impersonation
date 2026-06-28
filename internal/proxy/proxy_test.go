@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/camaeel/oidc-2-k8s-impersonation/internal/config"
-	dummy_oidc_server "github.com/camaeel/oidc-2-k8s-impersonation/internal/dummy_oidc_sever"
+	dummy_oidc_server "github.com/camaeel/oidc-2-k8s-impersonation/internal/dummy_oidc_server"
 )
 
 func TestNewReverseProxy(t *testing.T) {

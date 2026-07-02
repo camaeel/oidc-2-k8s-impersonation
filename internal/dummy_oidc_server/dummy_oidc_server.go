@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
@@ -199,35 +197,6 @@ func (d *DummyOIDCServer) GenerateJWT(additionalClaims map[string]interface{}) (
 	}
 
 	return tokenString, nil
-}
-
-// GetCACert returns an empty CA cert (not needed for HTTP test scenarios)
-func (d *DummyOIDCServer) GetCACert() string {
-	return ""
-}
-
-// GetCACertPEM returns a PEM-encoded certificate if needed for TLS verification
-func (d *DummyOIDCServer) GetCACertPEM() (string, error) {
-	// Create a self-signed certificate for the public key
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, d.PublicKey, d.PrivateKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to create certificate: %w", err)
-	}
-
-	pemCert := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: derBytes,
-	})
-
-	return string(pemCert), nil
 }
 
 // Close shuts down the mock server

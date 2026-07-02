@@ -13,9 +13,10 @@ import (
 )
 
 // extractBearerToken extracts the token from an Authorization header value.
-// Returns the raw token string and nil error on success.
-// Returns an error if the header is present but not a Bearer token.
-// Returns ("", nil) if the header is empty.
+// Returns ("", nil) only when the header is empty (caller must still check auth == "").
+// Returns an error with a descriptive message for:
+//   - Bearer scheme present but token left blank
+//   - Non-Bearer auth scheme used
 func extractBearerToken(authHeader string) (string, error) {
 	if authHeader == "" {
 		return "", nil

@@ -1,4 +1,4 @@
-all: test build
+all: vet test build
 
 build:
 	go build -o bin/ github.com/camaeel/oidc-2-k8s-impersonation/cmd/...

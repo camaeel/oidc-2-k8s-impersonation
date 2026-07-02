@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	defaultHttpPort            = 8080
-	defaultObservabilityPort   = 8081
-	defaultGroupsClaim         = "groups"
-	defaultUserClaim           = "sub"
+	defaultHttpPort          = 8080
+	defaultObservabilityPort = 8081
+	defaultGroupsClaim       = "groups"
+	defaultUserClaim         = "sub"
 
 	portEnvVarName              = "PORT"
 	observabilityPortEnvVarName = "OBSERVABILITY_PORT"
@@ -45,19 +45,6 @@ type Config struct {
 }
 
 // GetConfig parses --flags (with env vars as defaults) and returns a Config.
-//
-// Each flag falls back to its corresponding env var when not supplied:
-//
-//	-port          PORT          (default: 8080)
-//	-upstream      UPSTREAM
-//	-issuer        ISSUER
-//	-audience      AUDIENCE
-//	-groups-claim  GROUPS_CLAIM
-//	-user-claim    USER_CLAIM
-//	-group-prefix  GROUP_PREFIX
-//	-append-prefix APPEND_PREFIX
-//
-// Log level is configured separately via the LOG_LEVEL env var (see logging package).
 func GetConfig() (Config, error) {
 	defaultPortEnv, err := portEnvDefault(portEnvVarName, defaultHttpPort)
 	if err != nil {
@@ -95,12 +82,12 @@ func GetConfig() (Config, error) {
 		Port:              *port,
 		ObservabilityPort: *observabilityPort,
 		Upstream:          *upstream,
-		Issuer:         *issuer,
-		Audience:       *audience,
-		GroupsClaim:    *groupsClaim,
-		UserClaim:      *userClaim,
-		GroupPrefix:    *groupPrefix,
-		AddGroupPrefix: *addGroupPrefix,
+		Issuer:            *issuer,
+		Audience:          *audience,
+		GroupsClaim:       *groupsClaim,
+		UserClaim:         *userClaim,
+		GroupPrefix:       *groupPrefix,
+		AddGroupPrefix:    *addGroupPrefix,
 	}
 
 	err = validateConfig(cfg)
@@ -146,6 +133,9 @@ func validateConfig(cfg Config) error {
 
 	if upstream.Scheme != "http" && upstream.Scheme != "https" {
 		return fmt.Errorf("upstream URL must have http or https scheme")
+	}
+	if upstream.Host == "" {
+		return fmt.Errorf("upstream URL must have a non-empty host")
 	}
 
 	if cfg.Issuer == "" {

@@ -97,8 +97,10 @@ func TestAuthMiddleware(t *testing.T) {
 		authHeader      string
 		impersonateUser string
 		impersonateGrp  string
-		wantStatus      int
-		wantProxied     bool
+	impersonateUid  string
+	impersonateExtra string
+	wantStatus      int
+	wantProxied     bool
 	}{
 		{
 			name:            "no auth, no verifier → proxied, impersonation stripped",
@@ -129,6 +131,15 @@ func TestAuthMiddleware(t *testing.T) {
 			authHeader:  "Bearer some-token",
 			wantStatus:  http.StatusUnauthorized,
 			wantProxied: false,
+		},
+		{
+			name:             "Impersonate-Uid and Impersonate-Extra-* are stripped, no verifier",
+			verifier:         nil,
+			authHeader:       "",
+			impersonateUid:   "1234",
+			impersonateExtra: "some-scope",
+			wantStatus:       http.StatusOK,
+			wantProxied:      true,
 		},
 		{
 			name:        "auth present, no verifier → 401",
@@ -162,6 +173,12 @@ func TestAuthMiddleware(t *testing.T) {
 			if tc.impersonateGrp != "" {
 				req.Header.Set("Impersonate-Group", tc.impersonateGrp)
 			}
+			if tc.impersonateUid != "" {
+				req.Header.Set("Impersonate-Uid", tc.impersonateUid)
+			}
+			if tc.impersonateExtra != "" {
+				req.Header.Set("Impersonate-Extra-Scopes", tc.impersonateExtra)
+			}
 
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
@@ -172,6 +189,8 @@ func TestAuthMiddleware(t *testing.T) {
 			if tc.wantProxied {
 				assert.Empty(t, receivedHeaders.Get("Impersonate-User"), "Impersonate-User should be stripped")
 				assert.Empty(t, receivedHeaders.Get("Impersonate-Group"), "Impersonate-Group should be stripped")
+				assert.Empty(t, receivedHeaders.Get("Impersonate-Uid"), "Impersonate-Uid should be stripped")
+				assert.Empty(t, receivedHeaders.Get("Impersonate-Extra-Scopes"), "Impersonate-Extra-* should be stripped")
 			}
 		})
 	}

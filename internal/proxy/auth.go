@@ -47,9 +47,15 @@ func AuthMiddleware(next http.Handler, verifier TokenVerifier, cfg config.Config
 			http.Error(w, msg, status)
 		}
 
-		// Strip any existing impersonation headers from the incoming request.
-		r.Header.Del("Impersonate-User")
-		r.Header.Del("Impersonate-Group")
+		// Strip ALL impersonation headers from the incoming request.
+		// This covers Impersonate-User, Impersonate-Group, Impersonate-Uid,
+		// and the open-ended Impersonate-Extra-* family.
+		for key := range r.Header {
+			if key == "Impersonate-User" || key == "Impersonate-Group" ||
+				key == "Impersonate-Uid" || strings.HasPrefix(key, "Impersonate-Extra-") {
+				r.Header.Del(key)
+			}
+		}
 
 		auth := r.Header.Get("Authorization")
 

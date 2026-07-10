@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +28,25 @@ type responseRecorder struct {
 func (r *responseRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack implements http.Hijacker by delegating to the underlying ResponseWriter.
+// Required for httputil.ReverseProxy to tunnel Upgrade (WebSocket/SPDY) requests.
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	return hj.Hijack()
+}
+
+// Flush implements http.Flusher by delegating to the underlying ResponseWriter.
+// Required so streaming/chunked responses (e.g. `watch` requests) are flushed
+// to the client promptly instead of being buffered.
+func (r *responseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // withAccessLog wraps h and emits one INFO log line per request regardless of

@@ -137,6 +137,7 @@ func Start(cfg config.Config) error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("proxy server shutdown error", "error", err)
 		}
+		<-proxyErrCh
 
 		// Stop observability server.
 		obsCancel()

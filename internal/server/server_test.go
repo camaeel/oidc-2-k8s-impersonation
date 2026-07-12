@@ -125,8 +125,8 @@ func TestWithAccessLog_ProxiesProtocolUpgrade_Integration(t *testing.T) {
 		if err != nil {
 			return
 		}
-		_, _ = conn.Write([]byte("echo:"))
-		_, _ = conn.Write(buf[:n])
+		response := append([]byte("echo:"), buf[:n]...)
+		_, _ = conn.Write(response)
 	}))
 	defer backend.Close()
 

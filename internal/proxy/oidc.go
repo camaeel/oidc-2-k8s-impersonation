@@ -21,6 +21,10 @@ func NewOIDCVerifier(issuer, audience string) (*oidc.IDTokenVerifier, error) {
 		err      error
 	)
 
+	if issuer == "" {
+		return nil, fmt.Errorf("issuer URL is required for OIDC verification")
+	}
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		provider, err = oidc.NewProvider(ctx, issuer)
@@ -47,7 +51,6 @@ func NewOIDCVerifier(issuer, audience string) (*oidc.IDTokenVerifier, error) {
 		oidcCfg.SkipClientIDCheck = true
 		slog.Warn("AUDIENCE not configured, skipping OIDC audience (client_id) verification")
 	}
-
 
 	return provider.Verifier(oidcCfg), nil
 }

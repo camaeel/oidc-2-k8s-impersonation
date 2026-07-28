@@ -16,5 +16,3 @@ In `./hack` directory execute `docker compose up -d` to start a local OIDC provi
 Enter `http://localhost:4180` in your browser with one of Dex local users:
 * user@example.com / password
 * admin@example.com / admin
-
-# test
